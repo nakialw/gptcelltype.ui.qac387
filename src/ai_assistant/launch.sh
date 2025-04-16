@@ -14,14 +14,17 @@ source venv/bin/activate
 echo "Checking and installing requirements..."
 pip install -r requirements.txt
 
-# Check for .env file
+# Create evaluation directories if they don't exist
+echo "Setting up evaluation directories..."
+mkdir -p evaluation/logs evaluation/reports
+
+# Check for .env file but don't create it with a key - user will enter their key in the app
 if [ ! -f ".env" ]; then
-    echo "Creating .env file..."
-    echo "OPENAI_API_KEY=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" > .env
-    echo "Please edit .env file with your OpenAI API key"
-    exit 1
+    echo "Creating empty .env file..."
+    echo "# Add your OpenAI API key through the app interface" > .env
+    echo "# Format: OPENAI_API_KEY=your_key_here" >> .env
 fi
 
 # Launch the Streamlit app
 echo "Launching Cell Type Annotation Assistant..."
-streamlit run app.py 
+streamlit run app.py
