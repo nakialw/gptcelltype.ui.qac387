@@ -58,6 +58,8 @@ if 'evaluation_metrics' not in st.session_state:
     st.session_state.evaluation_metrics = {}
 if 'rag_vector_store' not in st.session_state:
     st.session_state.rag_vector_store = None
+if 'openai_model' not in st.session_state:
+    st.session_state.openai_model = "gpt-4o"
 if 'user_context' not in st.session_state:
     st.session_state.user_context = None
 if 'validation_log' not in st.session_state:
@@ -166,7 +168,11 @@ Refer to any previous cell type analyses in the conversation history if relevant
 def setup_openai():
     """Set up OpenAI API with user's API key"""
     api_key = st.session_state.api_key
-    return OpenAI(temperature=0, openai_api_key=api_key)
+    
+    # Check if model preference is in session state, default to gpt-4o
+    model_name = st.session_state.get('openai_model', 'gpt-4o')
+    
+    return OpenAI(temperature=0, openai_api_key=api_key, model=model_name)
 
 def create_prompt_chain(template_text):
     """Create a LangChain prompt template and chain - updated to modern syntax"""
@@ -874,8 +880,10 @@ def get_panglao_context(query):
     # Use a smaller model to avoid rate limits
     try:
         from langchain_openai import ChatOpenAI
+        # Use preferred model from session state
+        model_name = st.session_state.get('openai_model', 'gpt-4o')
         llm = ChatOpenAI(
-            model="gpt-3.5-turbo", # Use a smaller model
+            model=model_name,
             temperature=0,
             openai_api_key=st.session_state.api_key,
             max_tokens=300  # Limit response size
@@ -1290,9 +1298,23 @@ def main():
         api_key = st.text_input("Enter your OpenAI API Key", type="password", 
                                help="Your API key will be used to interact with the OpenAI API.")
         
+        # Add model selection
+        model_options = ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
+        selected_model = st.selectbox(
+            "Select OpenAI Model", 
+            options=model_options,
+            index=model_options.index(st.session_state.openai_model),
+            help="Select the OpenAI model to use for analysis. GPT-4o is recommended for best results."
+        )
+        
         if api_key:
             st.session_state.api_key = api_key
             st.success("API Key set successfully!")
+            
+        # Update model preference in session state
+        if selected_model != st.session_state.openai_model:
+            st.session_state.openai_model = selected_model
+            st.success(f"Using {selected_model} for analysis")
             
             # Initialize RAG knowledge base if not already done
             if st.session_state.rag_vector_store is None:
@@ -1521,8 +1543,10 @@ def main():
                                 
                                 # Use a more token-efficient model
                                 from langchain_openai import ChatOpenAI
+                                # Use preferred model from session state
+                                model_name = st.session_state.get('openai_model', 'gpt-4o')
                                 llm = ChatOpenAI(
-                                    model="gpt-3.5-turbo", 
+                                    model=model_name,
                                     temperature=0,
                                     openai_api_key=st.session_state.api_key,
                                     max_tokens=800  # Limit response size
@@ -1951,8 +1975,10 @@ Query: {user_question}
                                         
                                         # Use a more efficient model to avoid rate limits
                                         from langchain_openai import ChatOpenAI
+                                        # Use preferred model from session state
+                                        model_name = st.session_state.get('openai_model', 'gpt-4o')
                                         llm = ChatOpenAI(
-                                            model="gpt-3.5-turbo", 
+                                            model=model_name,
                                             temperature=0,
                                             openai_api_key=st.session_state.api_key,
                                             max_tokens=500
@@ -2105,8 +2131,10 @@ Query: {user_question}
                                 
                                 # Use a more token-efficient model
                                 from langchain_openai import ChatOpenAI
+                                # Use preferred model from session state
+                                model_name = st.session_state.get('openai_model', 'gpt-4o')
                                 llm = ChatOpenAI(
-                                    model="gpt-3.5-turbo", 
+                                    model=model_name,
                                     temperature=0,
                                     openai_api_key=st.session_state.api_key,
                                     max_tokens=200  # Limit response size for prediction
