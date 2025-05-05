@@ -62,6 +62,15 @@ if 'user_context' not in st.session_state:
     st.session_state.user_context = None
 if 'validation_log' not in st.session_state:
     st.session_state.validation_log = []
+# New conversation tracking for continuous workflow
+if 'conversation_history' not in st.session_state:
+    st.session_state.conversation_history = []
+if 'pending_viz_query' not in st.session_state:
+    st.session_state.pending_viz_query = None
+if 'pending_cluster_query' not in st.session_state:
+    st.session_state.pending_cluster_query = None
+if 'selected_page' not in st.session_state:
+    st.session_state.selected_page = "Data Analysis"
 
 # Define the system prompt based on GPTCelltype paper methodology
 CELL_TYPE_PROMPT = """You are an expert in single-cell RNA sequencing analysis and cell type annotation, following the methodology from the GPTCelltype paper.
@@ -76,6 +85,9 @@ Retrieved context information:
 User context (if provided):
 {user_context}
 
+Conversation history (if any):
+{conversation_context}
+
 User question: {question}
 
 Please provide a detailed response that includes:
@@ -86,6 +98,9 @@ Please provide a detailed response that includes:
 5. Comparison with known cell type markers from literature
 
 Note: For optimal results, use the top 10 differentially expressed genes derived from the Wilcoxon test, as shown in the GPTCelltype paper.
+
+If the user is requesting visualization, suggest specific plots they could create and which tab they should navigate to.
+If the user is requesting clustering analysis, suggest they visit the Clustering tab and what parameters to try.
 """
 
 VISUALIZATION_PROMPT = """You are an expert in single-cell RNA sequencing visualization and interpretation, following the methodology from the VisCello paper.
@@ -100,6 +115,9 @@ Retrieved context information:
 User context (if provided):
 {user_context}
 
+Conversation history (if any):
+{conversation_context}
+
 Visualization context:
 {viz_context}
 
@@ -111,6 +129,8 @@ Please provide a detailed interpretation that includes:
 3. Suggestions for alternative visualization approaches
 4. Biological implications of the observed patterns
 5. Recommendations for further analysis
+
+If the visualization shows evidence of specific cell types, refer back to any previous cell type analyses in the conversation history.
 """
 
 CLUSTERING_PROMPT = """You are an expert in single-cell RNA sequencing clustering analysis.
@@ -125,6 +145,9 @@ Retrieved context information:
 User context (if provided):
 {user_context}
 
+Conversation history (if any):
+{conversation_context}
+
 Clustering context:
 {cluster_context}
 
@@ -136,6 +159,8 @@ Please provide a detailed analysis that includes:
 3. Biological interpretation of the identified clusters
 4. Suggestions for marker genes that define each cluster
 5. Possible sub-clustering opportunities for heterogeneous clusters
+
+Refer to any previous cell type analyses in the conversation history if relevant to the clustering interpretation.
 """
 
 def setup_openai():
@@ -147,15 +172,19 @@ def create_prompt_chain(template_text):
     """Create a LangChain prompt template and chain - updated to modern syntax"""
     from langchain_core.runnables import RunnablePassthrough
     
-    # Use a more direct approach without LLMChain
+    # Update template to include conversation context
     template = PromptTemplate(
-        input_variables=["data_context", "rag_context", "user_context", "question"],
+        input_variables=["data_context", "rag_context", "user_context", "conversation_context", "question"],
         template=template_text
     )
     
     # Modern LangChain use pipe operator instead of LLMChain
     # But since this is just a wrapper, we'll use a simple function
     def run_chain(inputs):
+        # Add conversation context if not provided
+        if "conversation_context" not in inputs:
+            inputs["conversation_context"] = get_conversation_context()
+            
         # Use direct model call instead of deprecated run
         llm = setup_openai()
         prompt_value = template.format(**inputs)
@@ -167,6 +196,9 @@ def create_viz_prompt_chain():
     """Create a visualization-specific prompt chain - updated to modern syntax"""
     # Use a more direct approach
     def viz_chain(inputs):
+        # Get conversation context if not provided
+        conversation_context = inputs.get('conversation_context', get_conversation_context())
+        
         # Format the template manually to avoid deprecated chains
         prompt = f"""You are an expert in single-cell RNA sequencing visualization and interpretation.
         
@@ -179,12 +211,16 @@ def create_viz_prompt_chain():
         User context:
         {inputs.get('user_context', '')}
         
+        Conversation history:
+        {conversation_context}
+        
         Visualization context:
         {inputs.get('viz_context', '')}
         
         User question: {inputs.get('question', '')}
         
         Please provide a concise interpretation about what the visualization shows.
+        If relevant, refer to previous cell type analyses from the conversation history.
         """
         
         # Use direct invocation
@@ -197,6 +233,9 @@ def create_clustering_prompt_chain():
     """Create a clustering-specific prompt chain - updated to modern syntax"""
     # Use a more direct approach
     def cluster_chain(inputs):
+        # Get conversation context if not provided
+        conversation_context = inputs.get('conversation_context', get_conversation_context())
+        
         # Format the template manually to avoid deprecated chains
         prompt = f"""You are an expert in single-cell RNA sequencing clustering analysis.
         
@@ -209,12 +248,16 @@ def create_clustering_prompt_chain():
         User context:
         {inputs.get('user_context', '')}
         
+        Conversation history:
+        {conversation_context}
+        
         Clustering context:
         {inputs.get('cluster_context', '')}
         
         User question: {inputs.get('question', '')}
         
         Please provide a concise analysis of the clustering results.
+        If relevant, refer to previous analyses from the conversation history.
         """
         
         # Use direct invocation
@@ -1036,6 +1079,86 @@ def validate_app_functionality(test_case, result, expected=None):
     
     return validation_entry
 
+def add_to_conversation_history(query, response, analysis_type):
+    """Add an interaction to the conversation history for context tracking."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Keep track of the interaction
+    entry = {
+        'timestamp': timestamp,
+        'query': query,
+        'response': response,
+        'type': analysis_type
+    }
+    
+    # Add to conversation history
+    st.session_state.conversation_history.append(entry)
+    
+    # Limit history size to prevent context bloat (keep last 10 interactions)
+    if len(st.session_state.conversation_history) > 10:
+        st.session_state.conversation_history = st.session_state.conversation_history[-10:]
+        
+    return entry
+
+def detect_intent(query):
+    """Detect the user's intent from their query to route to the appropriate section."""
+    # Convert query to lowercase for easier matching
+    query_lower = query.lower()
+    
+    # Keywords for different types of intents
+    visualization_keywords = [
+        'visualize', 'plot', 'graph', 'show me', 'display', 'draw',
+        'umap', 'heatmap', 'violin', 'distribution', 'expression of',
+        'expression level', 'expression pattern', 'across clusters'
+    ]
+    
+    clustering_keywords = [
+        'cluster', 'group', 'leiden', 'louvain', 'community detection',
+        'partition', 'categorize', 'categorise', 'classify cells',
+        'cluster analysis', 'cluster the data', 'run clustering'
+    ]
+    
+    evaluation_keywords = [
+        'evaluate', 'validate', 'test', 'assessment', 'measure performance',
+        'accuracy', 'precision', 'recall', 'f1', 'metrics', 'compare'
+    ]
+    
+    # Check for visualization intent
+    if any(keyword in query_lower for keyword in visualization_keywords):
+        return "Visualization"
+    
+    # Check for clustering intent
+    elif any(keyword in query_lower for keyword in clustering_keywords):
+        return "Clustering"
+    
+    # Check for evaluation intent
+    elif any(keyword in query_lower for keyword in evaluation_keywords):
+        return "Evaluation"
+    
+    # Default to data analysis
+    else:
+        return "Data Analysis"
+
+def get_conversation_context(max_entries=3):
+    """Get recent conversation context for enhancing prompts."""
+    if not st.session_state.conversation_history:
+        return ""
+    
+    # Get the most recent entries
+    recent_entries = st.session_state.conversation_history[-max_entries:]
+    
+    # Format into context string
+    context = "Recent conversation history:\n"
+    for i, entry in enumerate(recent_entries):
+        context += f"[Q{i+1}] User: {entry['query']}\n"
+        # Truncate response if too long
+        response = entry['response']
+        if len(response) > 150:
+            response = response[:150] + "..."
+        context += f"[A{i+1}] Assistant: {response}\n\n"
+    
+    return context
+
 def run_validation_suite():
     """Run a series of validation tests on the application functionality."""
     # Clear previous validation logs
@@ -1199,7 +1322,15 @@ def main():
         
         # Navigation
         st.header("Navigation")
-        page = st.radio("Select Page", ["Data Analysis", "Visualization", "Clustering", "Evaluation", "RAG Context", "Testing"])
+        # Use session state to remember page selection
+        page = st.radio("Select Page", 
+                        ["Data Analysis", "Visualization", "Clustering", "Evaluation", "RAG Context", "Testing"],
+                        index=["Data Analysis", "Visualization", "Clustering", "Evaluation", "RAG Context", "Testing"].index(st.session_state.selected_page))
+        
+        # Update selected page when changed
+        if page != st.session_state.selected_page:
+            st.session_state.selected_page = page
+            st.experimental_rerun()
         
         st.divider()
         
@@ -1330,9 +1461,37 @@ def main():
                 height=100
             )
             
+            # Check for pending visualization query
+            if st.session_state.pending_viz_query:
+                user_question = st.session_state.pending_viz_query
+                st.session_state.pending_viz_query = None  # Clear after using
+                
+            # Check for pending clustering query
+            if st.session_state.pending_cluster_query:
+                user_question = st.session_state.pending_cluster_query
+                st.session_state.pending_cluster_query = None  # Clear after using
+            
             # Process the query
             if st.button("Analyze"):
                 if user_question:
+                    # Detect intent to see if we should suggest tab navigation
+                    intent = detect_intent(user_question)
+                    
+                    # If the intent is for a different tab, suggest navigation
+                    if intent != "Data Analysis":
+                        st.info(f"Your question seems to be about {intent}. Would you like to switch to the {intent} tab?")
+                        
+                        if st.button(f"Go to {intent} Tab"):
+                            # Store the question for use in the target tab
+                            if intent == "Visualization":
+                                st.session_state.pending_viz_query = user_question
+                            elif intent == "Clustering":
+                                st.session_state.pending_cluster_query = user_question
+                                
+                            # Update selected page and rerun
+                            st.session_state.selected_page = intent
+                            st.experimental_rerun()
+                    
                     with st.spinner("Analyzing your data using GPT..."):
                         try:
                             # Create chain with the current API key
@@ -1343,6 +1502,9 @@ def main():
                             
                             # Get user context if available
                             user_context = st.session_state.user_context if st.session_state.user_context else ""
+                            
+                            # Get conversation context
+                            conversation_context = get_conversation_context()
                             
                             # Use a more efficient model to avoid rate limits
                             try:
@@ -1376,7 +1538,10 @@ def main():
                                 
                                 User question: {user_question}
                                 
+                                {conversation_context}
+                                
                                 Please provide a concise analysis (max 400 words).
+                                If the user is asking about visualization or clustering, suggest they can navigate to those tabs.
                                 """
                                 
                                 # Skip user context if not available to save tokens
@@ -1405,6 +1570,9 @@ def main():
                             # Display response
                             st.subheader("Analysis")
                             st.write(response)
+                            
+                            # Add interaction to conversation history
+                            add_to_conversation_history(user_question, response, "Data Analysis")
                             
                             # Option to save results
                             col1, col2 = st.columns([3, 1])
@@ -1438,26 +1606,29 @@ Query: {user_question}
                                 "Success"
                             )
                             
-                            # Add visualization
-                            st.subheader("Gene Expression Visualization")
-                            viz_options = st.multiselect(
-                                "Select visualization options:",
-                                ["Violin Plot", "Heatmap", "Bar Chart"]
-                            )
-                            
-                            if "Violin Plot" in viz_options:
-                                selected_gene = st.selectbox("Select a gene for violin plot:", df['gene'].values, key="violin")
-                                fig = visualize_gene_expression(df, selected_gene, plot_type="violin")
-                                st.plotly_chart(fig)
-                            
-                            if "Heatmap" in viz_options:
-                                fig = visualize_gene_expression(df, None, plot_type="heatmap")
-                                st.plotly_chart(fig)
-                            
-                            if "Bar Chart" in viz_options:
-                                selected_gene = st.selectbox("Select a gene for bar chart:", df['gene'].values, key="bar")
-                                fig = visualize_gene_expression(df, selected_gene, plot_type="bar")
-                                st.plotly_chart(fig)
+                            # Check again for visualization intent
+                            if "visualiz" in user_question.lower() or "plot" in user_question.lower() or "show" in user_question.lower():
+                                st.subheader("Gene Expression Visualization")
+                                st.info("It looks like you might be interested in visualizations. You can create visualizations here or navigate to the Visualization tab for more options.")
+                                
+                                viz_options = st.multiselect(
+                                    "Select visualization options:",
+                                    ["Violin Plot", "Heatmap", "Bar Chart"]
+                                )
+                                
+                                if "Violin Plot" in viz_options:
+                                    selected_gene = st.selectbox("Select a gene for violin plot:", df['gene'].values, key="violin")
+                                    fig = visualize_gene_expression(df, selected_gene, plot_type="violin")
+                                    st.plotly_chart(fig)
+                                
+                                if "Heatmap" in viz_options:
+                                    fig = visualize_gene_expression(df, None, plot_type="heatmap")
+                                    st.plotly_chart(fig)
+                                
+                                if "Bar Chart" in viz_options:
+                                    selected_gene = st.selectbox("Select a gene for bar chart:", df['gene'].values, key="bar")
+                                    fig = visualize_gene_expression(df, selected_gene, plot_type="bar")
+                                    st.plotly_chart(fig)
                             
                             # Log this query to history
                             st.session_state.prediction_history.append({
@@ -1466,6 +1637,14 @@ Query: {user_question}
                                 'response': response
                             })
                             
+                            # Show conversation history in expander
+                            if len(st.session_state.conversation_history) > 0:
+                                with st.expander("Conversation History", expanded=False):
+                                    for i, entry in enumerate(st.session_state.conversation_history):
+                                        st.markdown(f"**Q{i+1}:** {entry['query']}")
+                                        st.markdown(f"**A{i+1}:** {entry['response'][:200]}...")
+                                        st.divider()
+                            
                         except Exception as e:
                             st.error(f"Error during analysis: {str(e)}")
                 else:
@@ -1473,6 +1652,20 @@ Query: {user_question}
         
         elif page == "Visualization":
             st.header("Data Visualization")
+            
+            # Check for pending visualization query from another tab
+            if st.session_state.pending_viz_query:
+                viz_question = st.session_state.pending_viz_query
+                st.session_state.pending_viz_query = None  # Clear after using
+                st.info(f"Continuing with your question: '{viz_question}'")
+            
+            # Display conversation history in expander if there's history
+            if len(st.session_state.conversation_history) > 0:
+                with st.expander("Conversation History", expanded=False):
+                    for i, entry in enumerate(st.session_state.conversation_history):
+                        st.markdown(f"**Q{i+1}:** {entry['query']}")
+                        st.markdown(f"**A{i+1}:** {entry['response'][:200]}...")
+                        st.divider()
             
             # UMAP visualization
             try:
@@ -1525,11 +1718,14 @@ Query: {user_question}
                 # Interpret visualization with AI
                 st.subheader("Interpret Visualizations")
                 viz_context = f"Visualization type: {viz_type}"
-                viz_question = st.text_area(
-                    "Ask a question about the visualization:",
-                    placeholder="e.g., What patterns do you see in the gene expression heatmap?",
-                    key="viz_question"
-                )
+                
+                # Use the pending query if it exists, otherwise show an input field
+                if 'viz_question' not in locals():
+                    viz_question = st.text_area(
+                        "Ask a question about the visualization:",
+                        placeholder="e.g., What patterns do you see in the gene expression heatmap?",
+                        key="viz_question_input"
+                    )
                 
                 if st.button("Interpret") and viz_question:
                     with st.spinner("Generating interpretation..."):
@@ -1543,14 +1739,32 @@ Query: {user_question}
                             # Get user context if available
                             user_context = st.session_state.user_context if st.session_state.user_context else ""
                             
+                            # Get conversation context
+                            conversation_context = get_conversation_context()
+                            
                             # Get response with RAG and user context
-                            viz_response = viz_chain.run(
-                                data_context=data_context,
-                                viz_context=viz_context,
-                                rag_context=rag_context,
-                                user_context=user_context,
-                                question=viz_question
-                            )
+                            try:
+                                viz_response = viz_chain({
+                                    'data_context': data_context,
+                                    'viz_context': viz_context,
+                                    'rag_context': rag_context,
+                                    'user_context': user_context,
+                                    'conversation_context': conversation_context,
+                                    'question': viz_question
+                                })
+                            except Exception as chain_error:
+                                st.error(f"Error in visualization chain: {str(chain_error)}")
+                                # Fallback to direct LLM call
+                                llm = setup_openai()
+                                prompt = f"You're analyzing a {viz_type} visualization of single-cell data. {viz_question}"
+                                viz_response = llm.invoke(prompt)
+                            
+                            # Extract content if needed
+                            if hasattr(viz_response, 'content'):
+                                viz_response = viz_response.content
+                            
+                            # Add to conversation history
+                            add_to_conversation_history(viz_question, viz_response, "Visualization")
                             
                             # Log this successful interpretation in validation log
                             validate_app_functionality(
@@ -1569,6 +1783,20 @@ Query: {user_question}
         
         elif page == "Clustering":
             st.header("Clustering Analysis")
+            
+            # Check for pending clustering query from another tab
+            if st.session_state.pending_cluster_query:
+                cluster_question = st.session_state.pending_cluster_query
+                st.session_state.pending_cluster_query = None  # Clear after using
+                st.info(f"Continuing with your question: '{cluster_question}'")
+            
+            # Display conversation history in expander if there's history
+            if len(st.session_state.conversation_history) > 0:
+                with st.expander("Conversation History", expanded=False):
+                    for i, entry in enumerate(st.session_state.conversation_history):
+                        st.markdown(f"**Q{i+1}:** {entry['query']}")
+                        st.markdown(f"**A{i+1}:** {entry['response'][:200]}...")
+                        st.divider()
             
             # Only proceed if we have AnnData
             if st.session_state.anndata is not None:
@@ -1654,11 +1882,14 @@ Query: {user_question}
                             
                             # AI interpretation of clusters
                             st.subheader("Interpret Clustering")
-                            cluster_question = st.text_area(
-                                "Ask a question about the clustering results:",
-                                placeholder="e.g., What do the clustering results suggest about cell populations?",
-                                key="cluster_question"
-                            )
+                            
+                            # Use the pending query if it exists, otherwise show an input field
+                            if 'cluster_question' not in locals():
+                                cluster_question = st.text_area(
+                                    "Ask a question about the clustering results:",
+                                    placeholder="e.g., What do the clustering results suggest about cell populations?",
+                                    key="cluster_question_input"
+                                )
                             
                             if cluster_question:
                                 with st.spinner("Interpreting clusters..."):
@@ -1672,6 +1903,9 @@ Query: {user_question}
                                         # Get user context if available
                                         user_context = st.session_state.user_context if st.session_state.user_context else ""
                                         
+                                        # Get conversation context
+                                        conversation_context = get_conversation_context()
+                                        
                                         # Use a more efficient model to avoid rate limits
                                         from langchain_openai import ChatOpenAI
                                         llm = ChatOpenAI(
@@ -1681,7 +1915,7 @@ Query: {user_question}
                                             max_tokens=500
                                         )
                                         
-                                        # Format a simpler prompt
+                                        # Format a simpler prompt with conversation history
                                         prompt = f"""You are a scRNA-seq clustering expert.
                                         
                                         Clustering results:
@@ -1690,9 +1924,13 @@ Query: {user_question}
                                         Context information:
                                         {rag_context}
                                         
+                                        Conversation history:
+                                        {conversation_context}
+                                        
                                         Question: {cluster_question}
                                         
                                         Provide a concise and helpful interpretation (max 250 words).
+                                        If this relates to previous cell type analyses in the conversation, refer to those.
                                         """
                                         
                                         # Get response
@@ -1709,6 +1947,9 @@ Query: {user_question}
                                                 cluster_response = result.content
                                             else:
                                                 cluster_response = str(result)
+                                        
+                                        # Add to conversation history
+                                        add_to_conversation_history(cluster_question, cluster_response, "Clustering")
                                         
                                         # Log this successful clustering interpretation in validation log
                                         validate_app_functionality(
