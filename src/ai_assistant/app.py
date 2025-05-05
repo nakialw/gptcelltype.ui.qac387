@@ -1330,7 +1330,7 @@ def main():
         # Update selected page when changed
         if page != st.session_state.selected_page:
             st.session_state.selected_page = page
-            st.experimental_rerun()
+            st.rerun()
         
         st.divider()
         
@@ -1397,7 +1397,7 @@ def main():
             st.session_state.data = None
             st.session_state.anndata = None
             st.session_state.prediction_history = []
-            st.experimental_rerun()
+            st.rerun()
     
     # Only proceed if data is loaded
     if st.session_state.data is not None:
@@ -1490,7 +1490,7 @@ def main():
                                 
                             # Update selected page and rerun
                             st.session_state.selected_page = intent
-                            st.experimental_rerun()
+                            st.rerun()
                     
                     with st.spinner("Analyzing your data using GPT..."):
                         try:
@@ -1973,7 +1973,7 @@ Query: {user_question}
                     try:
                         st.session_state.anndata = convert_to_anndata(df)
                         st.success("Successfully converted data to AnnData format!")
-                        st.experimental_rerun()
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Conversion error: {str(e)}")
                         
@@ -2290,7 +2290,7 @@ Query: {user_question}
                 if st.button("Clear User Context"):
                     st.session_state.user_context = None
                     st.success("User context cleared.")
-                    st.experimental_rerun()
+                    st.rerun()
                     
         elif page == "Testing":
             st.header("Testing & Validation")
