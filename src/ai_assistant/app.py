@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
-from langchain_openai import OpenAI
+from langchain_openai import ChatOpenAI
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -172,7 +172,8 @@ def setup_openai():
     # Check if model preference is in session state, default to gpt-4o
     model_name = st.session_state.get('openai_model', 'gpt-4o')
     
-    return OpenAI(temperature=0, openai_api_key=api_key, model=model_name)
+    # Use ChatOpenAI instead of OpenAI for compatibility with newer models
+    return ChatOpenAI(temperature=0, openai_api_key=api_key, model=model_name)
 
 def create_prompt_chain(template_text):
     """Create a LangChain prompt template and chain - updated to modern syntax"""
@@ -191,8 +192,9 @@ def create_prompt_chain(template_text):
         if "conversation_context" not in inputs:
             inputs["conversation_context"] = get_conversation_context()
             
-        # Use direct model call instead of deprecated run
-        llm = setup_openai()
+        # Use ChatOpenAI directly instead of the setup_openai function
+        model_name = st.session_state.get('openai_model', 'gpt-4o')
+        llm = ChatOpenAI(temperature=0, openai_api_key=st.session_state.api_key, model=model_name)
         prompt_value = template.format(**inputs)
         return llm.invoke(prompt_value)
         
@@ -229,8 +231,9 @@ def create_viz_prompt_chain():
         If relevant, refer to previous cell type analyses from the conversation history.
         """
         
-        # Use direct invocation
-        llm = setup_openai()
+        # Use ChatOpenAI directly instead of the setup_openai function
+        model_name = st.session_state.get('openai_model', 'gpt-4o')
+        llm = ChatOpenAI(temperature=0, openai_api_key=st.session_state.api_key, model=model_name)
         return llm.invoke(prompt)
         
     return viz_chain
@@ -266,8 +269,9 @@ def create_clustering_prompt_chain():
         If relevant, refer to previous analyses from the conversation history.
         """
         
-        # Use direct invocation
-        llm = setup_openai()
+        # Use ChatOpenAI directly instead of the setup_openai function
+        model_name = st.session_state.get('openai_model', 'gpt-4o')
+        llm = ChatOpenAI(temperature=0, openai_api_key=st.session_state.api_key, model=model_name)
         return llm.invoke(prompt)
         
     return cluster_chain
@@ -1780,7 +1784,9 @@ Query: {user_question}
                             except Exception as chain_error:
                                 st.error(f"Error in visualization chain: {str(chain_error)}")
                                 # Fallback to direct LLM call
-                                llm = setup_openai()
+                                # Direct ChatOpenAI call as fallback
+                                model_name = st.session_state.get('openai_model', 'gpt-4o')
+                                llm = ChatOpenAI(temperature=0, openai_api_key=st.session_state.api_key, model=model_name)
                                 prompt = f"You're analyzing a {viz_type} visualization of single-cell data. {viz_question}"
                                 viz_response = llm.invoke(prompt)
                             
