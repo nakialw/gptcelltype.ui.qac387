@@ -65,6 +65,7 @@ if [ $COMPATIBILITY_MODE -eq 1 ]; then
     export VECLIB_MAXIMUM_THREADS=1
     export NUMEXPR_NUM_THREADS=1
     export PYTHONUNBUFFERED=1
+    export OMP_MAX_ACTIVE_LEVELS=1  # Replace deprecated omp_set_nested
     
     # Set FAISS_DISABLE environment variable to signal compatibility mode to the app
     export FAISS_DISABLE=1
@@ -100,6 +101,7 @@ else
     # Set minimal environment variables
     export OMP_NUM_THREADS=1
     export PYTHONUNBUFFERED=1
+    export OMP_MAX_ACTIVE_LEVELS=1  # Replace deprecated omp_set_nested
 fi
 
 # Create evaluation directories if they don't exist
@@ -146,7 +148,7 @@ else
         echo "If this also fails, try: ./launch.sh --compatible"
         echo ""
         # More conservative launch settings
-        PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 python -m streamlit run app.py
+        PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 OMP_MAX_ACTIVE_LEVELS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m streamlit run app.py
     fi
 fi
 

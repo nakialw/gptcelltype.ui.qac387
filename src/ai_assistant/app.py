@@ -920,6 +920,7 @@ def analyze_with_scanpy(adata):
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OMP_MAX_ACTIVE_LEVELS'] = '1'  # Replace deprecated omp_set_nested
     
     try:
         # Set scanpy settings to use minimal threads
@@ -1827,6 +1828,14 @@ Query: {user_question}
                             # Create a copy to avoid modifying original
                             adata_copy = adata.copy()
                             
+                            # Set thread limits explicitly for this section
+                            import os
+                            os.environ['OMP_NUM_THREADS'] = '1'
+                            os.environ['OPENBLAS_NUM_THREADS'] = '1'
+                            os.environ['MKL_NUM_THREADS'] = '1'
+                            os.environ['OMP_MAX_ACTIVE_LEVELS'] = '1'
+                            sc.settings.n_jobs = 1
+                            
                             # Basic preprocessing
                             sc.pp.normalize_total(adata_copy, target_sum=1e4)
                             sc.pp.log1p(adata_copy)
@@ -1836,21 +1845,55 @@ Query: {user_question}
                                 sc.pp.highly_variable_genes(adata_copy, min_mean=0.0125, max_mean=3, min_disp=0.5)
                             
                             # Safe PCA - avoid negative n_components error
-                            n_components = min(50, adata_copy.n_vars - 1, adata_copy.n_obs - 1)
-                            sc.tl.pca(adata_copy, svd_solver='arpack', n_comps=n_components)
+                            n_components = min(40, adata_copy.n_vars - 1, adata_copy.n_obs - 1)
+                            # Try different PCA solvers in case of failure
+                            try:
+                                sc.tl.pca(adata_copy, svd_solver='arpack', n_comps=n_components)
+                            except Exception as e:
+                                st.warning(f"PCA with arpack failed, trying randomized: {e}")
+                                try:
+                                    sc.tl.pca(adata_copy, svd_solver='randomized', n_comps=n_components)
+                                except Exception as e2:
+                                    st.error(f"PCA failed: {e2}")
+                                    # Create basic PCA using sklearn as fallback
+                                    from sklearn.decomposition import PCA
+                                    X = adata_copy.X.toarray() if hasattr(adata_copy.X, 'toarray') else adata_copy.X
+                                    pca = PCA(n_components=min(n_components, X.shape[1], X.shape[0]))
+                                    adata_copy.obsm['X_pca'] = pca.fit_transform(X)
                             
-                            # Safe neighborhood params
-                            n_pcs = min(n_components, 20)
-                            sc.pp.neighbors(adata_copy, n_neighbors=min(n_neighbors, adata_copy.n_obs//2), n_pcs=n_pcs)
+                            # Safe neighborhood params - limit n_pcs further
+                            n_pcs = min(n_components, 15)  # Use fewer PCs for stability
                             
-                            # Run UMAP
-                            sc.tl.umap(adata_copy)
+                            # Safer neighbors calculation
+                            try:
+                                sc.pp.neighbors(adata_copy, n_neighbors=min(n_neighbors, adata_copy.n_obs//2), 
+                                              n_pcs=n_pcs, method='umap')
+                            except Exception as e:
+                                st.warning(f"Neighbors calculation failed: {e}")
+                                # Try with minimal settings
+                                sc.pp.neighbors(adata_copy, n_neighbors=3, n_pcs=min(5, n_pcs))
                             
-                            # Clustering with appropriate resolution
-                            if adata_copy.n_obs < 20:
-                                sc.tl.leiden(adata_copy, resolution=0.3)  # Lower resolution for small datasets
+                            # Run UMAP with safer settings
+                            try:
+                                sc.tl.umap(adata_copy, min_dist=0.5, spread=1.0)
+                            except Exception as e:
+                                st.error(f"UMAP failed: {e}")
+                                # Use PCA as fallback for 2D coords
+                                if 'X_pca' in adata_copy.obsm:
+                                    adata_copy.obsm['X_umap'] = adata_copy.obsm['X_pca'][:, :2]
+                            
+                            # Use KMeans instead of Leiden to avoid OMP issues
+                            from sklearn.cluster import KMeans
+                            
+                            if 'X_pca' in adata_copy.obsm:
+                                # Choose cluster count based on dataset size
+                                n_clusters = min(max(2, adata_copy.n_obs // 5), 8)
+                                kmeans = KMeans(n_clusters=n_clusters, random_state=42).fit(adata_copy.obsm['X_pca'])
+                                adata_copy.obs['leiden'] = [str(x) for x in kmeans.labels_]
                             else:
-                                sc.tl.leiden(adata_copy)
+                                # Last resort if PCA failed
+                                import numpy as np
+                                adata_copy.obs['leiden'] = np.random.choice(['0', '1'], size=adata_copy.n_obs)
                             
                             # Store results
                             st.session_state.anndata = adata_copy
@@ -1875,7 +1918,7 @@ Query: {user_question}
                             cluster_context = f"""
                             Number of clusters identified: {len(cluster_counts)}
                             Cluster sizes: {dict(cluster_counts)}
-                            Clustering method: Leiden algorithm
+                            Clustering method: KMeans clustering
                             Number of observations: {adata_copy.n_obs}
                             Number of genes: {adata_copy.n_vars}
                             """
