@@ -1746,7 +1746,16 @@ Query: {user_question}
                 
                 # Interpret visualization with AI
                 st.subheader("Interpret Visualizations")
-                viz_context = f"Visualization type: {viz_type}"
+                
+                # Gather minimal visualization context to avoid token overflows
+                if viz_type == "heatmap":
+                    viz_context = f"Visualization type: {viz_type}. A heatmap showing gene expression across clusters/cells."
+                elif viz_type == "violin":
+                    viz_context = f"Visualization type: {viz_type}. Violin plots showing distribution of gene expression across clusters."
+                elif viz_type == "umap":
+                    viz_context = f"Visualization type: {viz_type}. UMAP dimensionality reduction showing cell clustering."
+                else:
+                    viz_context = f"Visualization type: {viz_type}."
                 
                 # Use the pending query if it exists, otherwise show an input field
                 if 'viz_question' not in locals():
@@ -1765,14 +1774,28 @@ Query: {user_question}
                             # Get RAG context based on the question
                             rag_context = get_rag_context(f"scRNA-seq visualization {viz_type} {viz_question}")
                             
+                            # Limit context sizes to avoid token overflow
+                            if len(data_context) > 2000:
+                                data_context = data_context[:2000] + "... (truncated)"
+                                
+                            if len(rag_context) > 1500:
+                                rag_context = rag_context[:1500] + "... (truncated)"
+                            
                             # Get user context if available
                             user_context = st.session_state.user_context if st.session_state.user_context else ""
+                            if user_context and len(user_context) > 500:
+                                user_context = user_context[:500] + "... (truncated)"
                             
-                            # Get conversation context
+                            # Get minimal conversation context
                             conversation_context = get_conversation_context()
+                            if len(conversation_context) > 1000:
+                                conversation_context = conversation_context[:1000] + "... (truncated)"
                             
-                            # Get response with RAG and user context
+                            # Use the viz_chain with restricted context
                             try:
+                                # Import here to ensure it's in scope for the fallback error handler
+                                from langchain_openai import ChatOpenAI
+                                
                                 viz_response = viz_chain({
                                     'data_context': data_context,
                                     'viz_context': viz_context,
